@@ -1,0 +1,10 @@
+{
+  "uid": "HubSpotCompanyEnrichment_card",
+  "type": "card",
+  "config": {
+    "name": "Company Enrichment",
+    "location": "crm.record.tab",
+    "entrypoint": "/app/cards/EnrichmentCard.tsx",
+    "objectTypes": ["companies"]
+  }
+}
