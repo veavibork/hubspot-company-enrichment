@@ -104,6 +104,8 @@ Other findings:
 - **Company data only.** Wikidata's people fields (CEOs, founders) aren't used. Contact enrichment needs a licensed provider and a lawful basis for processing.
 - **Sources fetch; the app evaluates.** Running the organization check on Wikidata's server took over 30 seconds and used up its per-client query-time budget. Doing it locally with a cache brought the Wikidata stage from 40–60 seconds (or a timeout) to about 8.
 - **Polite clients.** Both public sources get a descriptive User-Agent; the SEC also requires a contact email and allows 10 requests per second, so the EDGAR client throttles itself.
+- **CRM values are untrusted input.** Domains are validated as hostnames (international ones converted to ASCII) before they reach a SPARQL query, so a crafted `domain` can't alter it.
+- **Optional steps degrade, not fail.** If an annual report can't be fetched, incorporation falls back to SEC metadata; a rejected batch chunk is reported and the remaining chunks are still written.
 - **Retries only where they help:** 429, 5xx, timeouts and dropped connections, honoring `Retry-After`, otherwise exponential backoff with jitter. Other 4xx errors fail immediately.
 - **Partial batch failures (HTTP 207) are reported per record**, not hidden.
 - **Raw HTTP instead of HubSpot's SDK**, to show paging, batching and retries. In production I'd likely use [`hubspot-api-client`](https://github.com/HubSpot/hubspot-api-client-python).
@@ -203,8 +205,15 @@ tests/
 - **EDGAR for private companies** is mostly fundraising filings (Form D): name, state, address, no financials.
 - **Foreign SEC codes** for business addresses (e.g. Canadian provinces) aren't translated yet.
 - **Subdomains.** Only `www.` is stripped; handling `shop.acme.com` correctly needs the Public Suffix List.
-- **Class tree cache.** The organization check (~5s) could be cached between runs.
+- **Earlier values persist after a match changes.** When a source stops matching, or matches a different item, its previously written fields stay; only that source's status changes. This keeps every value visible for comparison, but the card can show a stale value next to a non-matched status. HubSpot's property history shows when each value was written.
+- **Exported text.** Values from public sources are written as-is; anyone exporting them to a spreadsheet should guard against formula injection (cells beginning with `=`, `+`, `-` or `@`).
 - **Scale.** Tested at tens of records. Tens of thousands would need throttling against HubSpot's burst limit, resumable runs, and incremental runs that skip recently checked companies.
+
+Next steps:
+
+- **Class tree cache.** The organization check (~5s) could persist Wikidata's class tree between runs, with a maximum age.
+- **GitHub Actions.** Run tests and card checks on every pull request; run enrichment on a schedule with the token as a repository secret, so failures alert by email.
+- **Fix the source data upstream.** Wikidata's GitLab *product* item carries GitLab Inc.'s SEC CIK and a stray "Zoom" alias; Biodesix's item lacks its website and CIK. Correcting those would let the website match find both directly.
 
 ## Data and licensing
 
