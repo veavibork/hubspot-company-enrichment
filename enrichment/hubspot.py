@@ -1,11 +1,3 @@
-"""A small HubSpot CRM client for company records.
-
-Covers only what this project needs: paging through companies, reading and
-creating company properties, and batch update/upsert. Every request goes
-through _request(), which retries on rate limits and server errors
-(see enrichment/retries.py).
-"""
-
 import time
 
 import requests
@@ -15,8 +7,6 @@ from enrichment.retries import request_with_retries
 
 
 class HubSpotError(Exception):
-    """A HubSpot request failed and won't be retried."""
-
     def __init__(self, status, message):
         super().__init__(f"HubSpot API error {status}: {message}")
         self.status = status
@@ -36,8 +26,7 @@ class HubSpotClient:
         )
         self.max_retries = max_retries
         self.base_delay = base_delay
-        # Injected so tests can skip real waiting.
-        self.sleep = sleep
+        self.sleep = sleep  # injected so tests don't wait
 
     def _request(self, method, path, **kwargs):
         resp = request_with_retries(
@@ -55,10 +44,7 @@ class HubSpotClient:
             return None
         return resp.json()
 
-    # --- Companies -----------------------------------------------------------
-
     def iter_companies(self, properties, page_size=100):
-        """Yield every company, following HubSpot's cursor paging."""
         path = f"/crm/objects/{HUBSPOT_API_VERSION}/companies"
         params = {"limit": page_size, "properties": ",".join(properties)}
 
@@ -72,33 +58,24 @@ class HubSpotClient:
             params["after"] = after
 
     def batch_update_companies(self, inputs):
-        """Update companies by record ID. inputs: [{"id": ..., "properties": {...}}]"""
+        """inputs: [{"id": record ID, "properties": {...}}]"""
         path = f"/crm/objects/{HUBSPOT_API_VERSION}/companies/batch/update"
         return self._batch(path, inputs)
 
     def batch_upsert_companies(self, inputs, id_property):
-        """Create or update companies matched on a unique-value property.
-
-        inputs: [{"id": <value of id_property>, "properties": {...}}]
-        """
+        """inputs: [{"id": value of id_property, "properties": {...}}]; id_property must be unique-valued."""
         path = f"/crm/objects/{HUBSPOT_API_VERSION}/companies/batch/upsert"
         keyed = [{**item, "idProperty": id_property} for item in inputs]
         return self._batch(path, keyed)
 
     def _batch(self, path, inputs):
-        """Send inputs in chunks. Returns (results, errors) across all chunks.
-
-        A 207 response means some inputs succeeded and some failed; those
-        failures come back in "errors" rather than as an exception.
-        """
+        """Returns (results, errors). Partial failures (HTTP 207) arrive in errors, not as exceptions."""
         results, errors = [], []
         for chunk in chunked(inputs, HUBSPOT_BATCH_SIZE):
             data = self._request("POST", path, json={"inputs": chunk})
             results.extend(data.get("results", []))
             errors.extend(data.get("errors", []))
         return results, errors
-
-    # --- Properties ----------------------------------------------------------
 
     def get_company_property_names(self):
         path = f"/crm/properties/{HUBSPOT_API_VERSION}/companies"

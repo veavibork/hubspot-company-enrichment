@@ -1,19 +1,4 @@
-"""Choose which Wikidata candidate, if any, is the same company as a HubSpot record.
-
-Every candidate already shares the company's website. That's necessary but
-not sufficient: people, software products and duplicate legal-entity records
-list the same website. So:
-
-1. Only organizations are considered. (Companies reached by following a
-   product's "developer" or "owned by" link count, and are scored the same way.)
-2. Each organization is scored on independent evidence: name, website rank,
-   and agreement with what HubSpot already knows (founded year, country,
-   employee count). HubSpot-based signals count only when HubSpot has a value.
-3. Sitelinks (how many Wikipedias cover the item) only break exact ties.
-4. If the evidence is weak or can't separate the top candidates, the result
-   is "ambiguous" and nothing should be written. A wrong match does more harm
-   than no match, because it looks trustworthy.
-"""
+"""Score Wikidata candidates against a HubSpot company and pick one, or none. Rules: README "How matching works"."""
 
 import re
 from dataclasses import dataclass, field
@@ -40,10 +25,8 @@ LEGAL_SUFFIXES = {
     "ltd", "limited", "plc", "pty", "gmbh", "ag", "sa", "bv", "nv",
 }
 
-# Not legal forms, but stripped the same way: "Salesforce.com, Inc." -> "salesforce".
-# Found with `python -m enrichment.check_suffixes`.
+# "Salesforce.com, Inc." -> "salesforce"; found with enrichment.check_suffixes.
 NAME_SUFFIXES = LEGAL_SUFFIXES | {"com"}
-
 
 
 @dataclass
@@ -66,12 +49,7 @@ class MatchResult:
 
 
 def choose_candidate(candidates, company):
-    """Pick the best candidate for a HubSpot company.
-
-    company: the record's HubSpot properties, e.g.
-        {"name": "Wayfair", "founded_year": "2002", "country": "United States",
-         "numberofemployees": "2000"}
-    """
+    """company: the record's HubSpot properties."""
     excluded = [
         f"{c.qid} ({c.label or 'no label'}): not an organization"
         for c in candidates
@@ -118,8 +96,7 @@ def score_candidate(candidate, company):
         add(NAME_PARTIAL, "name partly matches")
 
     if candidate.found_via:
-        # Reached through a link, so its own website played no part; it has to win on evidence.
-        add(0, f"found via {candidate.found_via}")
+        add(0, f"found via {candidate.found_via}")  # its own website played no part
     elif candidate.website_rank == "preferred":
         add(RANK_PREFERRED, "website is Wikidata's preferred value")
     elif candidate.website_rank == "deprecated":
@@ -135,8 +112,7 @@ def score_candidate(candidate, company):
                 f"founded year disagrees ({candidate.founded_year} vs HubSpot {hubspot_year})",
             )
 
-    # Compared as ISO codes. A HubSpot value we can't resolve gives no signal,
-    # rather than counting as a disagreement.
+    # An unresolvable HubSpot country gives no signal, not a disagreement.
     hubspot_country = to_iso2(company.get("country"))
     if hubspot_country and candidate.country_code:
         if hubspot_country == candidate.country_code:
@@ -162,7 +138,7 @@ def score_candidate(candidate, company):
 
 
 def name_score(company_name, candidate_names):
-    """3 if a candidate name matches after normalizing, 2 if one contains the other's words, else 0."""
+    """Exact after normalizing, partial if one name's words contain the other's, else 0."""
     target = normalize_name(company_name)
     if not target:
         return 0
@@ -181,7 +157,7 @@ def name_score(company_name, candidate_names):
 
 
 def normalize_name(name):
-    """Lowercase, drop punctuation and legal suffixes: "Wayfair, Inc." -> "wayfair"."""
+    """ "Wayfair, Inc." -> "wayfair" """
     if not name:
         return ""
     words = re.sub(r"[^\w\s]", " ", name.lower()).split()

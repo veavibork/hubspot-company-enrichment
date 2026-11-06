@@ -1,10 +1,4 @@
-"""Load sample companies into HubSpot from a CSV.
-
-Upserts on normalized_domain, so running it again updates the same records
-instead of creating duplicates.
-
-    python -m enrichment.seed [path/to/companies.csv]
-"""
+"""Upsert sample companies from a CSV on normalized_domain: python -m enrichment.seed [csv]"""
 
 import csv
 import sys
@@ -18,7 +12,7 @@ DEFAULT_CSV = "data/seed_companies.csv"
 
 
 def read_seed_rows(path):
-    """Turn CSV rows into upsert inputs. Rows without a usable domain are skipped."""
+    """(upsert inputs, skipped rows without a usable domain)"""
     inputs, skipped = [], []
     with open(path, newline="", encoding="utf-8") as f:
         for row in csv.DictReader(f):

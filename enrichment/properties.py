@@ -1,4 +1,4 @@
-"""Custom company properties this project writes to, and a setup step that creates them."""
+"""Custom company properties, created when missing."""
 
 GROUP = "companyinformation"
 
@@ -35,7 +35,7 @@ COMPANY_PROPERTIES = [
         "type": "number",
         "fieldType": "number",
         "groupName": GROUP,
-        # Without this, HubSpot shows thousands separators: "2,011".
+        # Otherwise HubSpot shows "2,011".
         "numberDisplayHint": "unformatted",
     },
     {
@@ -46,8 +46,7 @@ COMPANY_PROPERTIES = [
         "fieldType": "number",
         "groupName": GROUP,
     },
-    # Match outcome, written for every company checked, so review queues,
-    # reports and workflows can be built in HubSpot without code.
+    # Match outcome, for review queues and reports built in HubSpot.
     {
         "name": "wikidata_match_status",
         "label": "Wikidata Match Status",
@@ -87,7 +86,7 @@ COMPANY_PROPERTIES = [
         "fieldType": "date",
         "groupName": GROUP,
     },
-    # SEC EDGAR, looked up by the CIK found in Wikidata.
+    # SEC EDGAR
     *[
         {"name": name, "label": label, "description": description, "type": "string", "fieldType": "text", "groupName": GROUP}
         for name, label, description in [
@@ -97,7 +96,8 @@ COMPANY_PROPERTIES = [
             ("edgar_exchange", "EDGAR Exchange", "Stock exchange(s) the company is listed on."),
             ("edgar_sic_description", "EDGAR Industry (SIC)", "SEC Standard Industrial Classification."),
             ("edgar_filer_category", "EDGAR Filer Category", "SEC filer size category, e.g. Large accelerated filer."),
-            ("edgar_state_of_incorporation", "EDGAR State of Incorporation", "US state or SEC country code."),
+            ("edgar_state_of_incorporation", "EDGAR State of Incorporation", "US state code, or country for foreign companies."),
+            ("edgar_incorporation_source", "EDGAR Incorporation Source", "Annual report cover page (authoritative) or SEC filer metadata (often outdated)."),
             ("edgar_business_location", "EDGAR Business Location", "City and state/country of the business address on file."),
         ]
     ],
@@ -133,6 +133,18 @@ COMPANY_PROPERTIES = [
         ],
     },
     {
+        "name": "edgar_match_method",
+        "label": "EDGAR Match Method",
+        "description": "How the CIK was found.",
+        "type": "enumeration",
+        "fieldType": "select",
+        "groupName": GROUP,
+        "options": [
+            {"label": "CIK from Wikidata", "value": "wikidata_cik", "displayOrder": 0},
+            {"label": "SEC name lookup, corroborated by state", "value": "sec_name_lookup", "displayOrder": 1},
+        ],
+    },
+    {
         "name": "edgar_last_checked",
         "label": "EDGAR Last Checked",
         "description": "Date of the last EDGAR lookup.",
@@ -144,11 +156,7 @@ COMPANY_PROPERTIES = [
 
 
 def ensure_properties(client, definitions=COMPANY_PROPERTIES, dry_run=False):
-    """Create any properties that don't exist yet. Safe to run every time.
-
-    Returns the names of properties that were missing (and, unless dry_run,
-    have now been created).
-    """
+    """Returns the names of missing properties, created unless dry_run."""
     existing = client.get_company_property_names()
     missing = [d for d in definitions if d["name"] not in existing]
 

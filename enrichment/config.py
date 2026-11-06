@@ -1,26 +1,19 @@
-"""Settings shared across the project."""
-
 import os
 
 from dotenv import load_dotenv
 
 HUBSPOT_BASE_URL = "https://api.hubapi.com"
-
-# HubSpot's date-versioned API. Upgrading is a one-line change here.
 HUBSPOT_API_VERSION = "2026-09"
-
-# HubSpot's maximum number of inputs per batch request.
-HUBSPOT_BATCH_SIZE = 100
+HUBSPOT_BATCH_SIZE = 100  # HubSpot's per-request maximum
 
 
 def load_sec_user_agent():
-    """The SEC requires a contact email in the User-Agent. Returns None if not configured."""
+    """None if unset; EDGAR is then skipped."""
     load_dotenv()
     return os.getenv("SEC_USER_AGENT") or None
 
 
 def load_hubspot_token():
-    """Read the HubSpot access token from the environment (or .env)."""
     load_dotenv()
     token = os.getenv("HUBSPOT_ACCESS_TOKEN")
     if not token:

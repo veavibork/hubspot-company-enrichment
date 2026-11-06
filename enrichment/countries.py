@@ -1,8 +1,4 @@
-"""Resolve free-text country values to ISO 3166-1 alpha-2 codes.
-
-The lookup table (data/countries.csv) is generated from Wikidata by
-build_countries.py and committed, so runs and tests don't depend on the network.
-"""
+"""Free-text country -> ISO alpha-2 code, via data/countries.csv (see build_countries.py)."""
 
 import csv
 import re
@@ -13,7 +9,7 @@ COUNTRIES_CSV = Path(__file__).resolve().parent.parent / "data" / "countries.csv
 
 
 def country_key(text):
-    """Lowercase and drop everything but letters and digits: "U.S.A." -> "usa"."""
+    """ "U.S.A." -> "usa" """
     return re.sub(r"[\W_]", "", text.lower()) if text else ""
 
 
@@ -24,5 +20,4 @@ def _lookup():
 
 
 def to_iso2(text):
-    """Return the ISO alpha-2 code for a country name, alias or code, or None if unknown."""
     return _lookup().get(country_key(text))

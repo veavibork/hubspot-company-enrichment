@@ -1,5 +1,3 @@
-"""Retrying HTTP requests, shared by the HubSpot and Wikidata clients."""
-
 import random
 
 import requests
@@ -9,12 +7,7 @@ RETRYABLE_ERRORS = (requests.Timeout, requests.ConnectionError)
 
 
 def request_with_retries(session, method, url, sleep, max_retries=5, base_delay=1.0, **kwargs):
-    """Send a request, retrying on rate limits, server errors, timeouts and dropped connections.
-
-    Returns the final response, whether or not it succeeded; callers decide
-    how to report errors. Other 4xx errors are never retried, because they
-    fail the same way every time. A network error on the last attempt is raised.
-    """
+    """Returns the final response even if it failed; callers decide how to report it."""
     for attempt in range(max_retries + 1):
         try:
             resp = session.request(method, url, timeout=60, **kwargs)
@@ -30,7 +23,6 @@ def request_with_retries(session, method, url, sleep, max_retries=5, base_delay=
 
 
 def retry_delay(resp, attempt, base_delay):
-    """Seconds to wait before retrying: Retry-After if given, else exponential backoff."""
     retry_after = resp.headers.get("Retry-After")
     if retry_after:
         try:
@@ -41,5 +33,5 @@ def retry_delay(resp, attempt, base_delay):
 
 
 def backoff(attempt, base_delay):
-    # 1s, 2s, 4s, ... plus jitter, so parallel clients don't retry in lockstep.
+    # Jitter keeps clients rate-limited together from retrying together.
     return base_delay * (2**attempt) + random.uniform(0, base_delay)

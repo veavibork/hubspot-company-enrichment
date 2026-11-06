@@ -1,11 +1,4 @@
-"""Regenerate data/countries.csv from Wikidata.
-
-    python -m enrichment.build_countries
-
-Every item with an ISO 3166-1 alpha-2 code (P297) contributes its codes,
-labels and aliases. An alias that more than one country claims is ambiguous
-and left out, so it resolves to "unknown" rather than to the wrong country.
-"""
+"""Regenerate data/countries.csv from Wikidata. Aliases claimed by two countries are dropped."""
 
 import csv
 import time
@@ -44,7 +37,7 @@ def fetch_rows():
 
 
 def build_table(rows):
-    """Return ({key: iso2}, {ambiguous key: sorted iso2 codes})."""
+    """({key: iso2}, {ambiguous key: [iso2]})"""
     claims = defaultdict(set)
     for iso2, iso3, name in rows:
         for text in (iso2, iso3, name):

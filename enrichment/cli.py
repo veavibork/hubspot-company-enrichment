@@ -1,14 +1,4 @@
-"""Enrich HubSpot companies with Wikidata and SEC EDGAR.
-
-    python -m enrichment.cli --dry-run      # show what would change, write nothing
-    python -m enrichment.cli                # apply changes
-    python -m enrichment.cli --limit 5      # only the first 5 companies with a domain
-
-Each run: make sure the custom properties exist, page through companies,
-look their domains up in Wikidata, choose a match (see matching.py), look
-matched companies' CIKs up in EDGAR (if SEC_USER_AGENT is set), and
-batch-update only the values that actually changed.
-"""
+"""Enrich HubSpot companies with Wikidata and SEC EDGAR. Usage: README."""
 
 import argparse
 import sys
@@ -23,10 +13,10 @@ from enrichment.edgar import EdgarClient, normalize_cik
 from enrichment.hubspot import HubSpotClient
 from enrichment.matching import NAME_PARTIAL, choose_candidate, name_score
 from enrichment.properties import COMPANY_PROPERTIES, ensure_properties
+from enrichment.sec_lookup import ciks_for_name, corroborate, index_by_name
 from enrichment.wikidata import WikidataClient
 
-# What HubSpot already knows, used as matching evidence.
-EVIDENCE_PROPERTIES = ["name", "domain", "founded_year", "country", "numberofemployees"]
+EVIDENCE_PROPERTIES = ["name", "domain", "founded_year", "country", "state", "numberofemployees"]
 ENRICHED_PROPERTIES = [p["name"] for p in COMPANY_PROPERTIES if p["name"] != "normalized_domain"]
 
 
@@ -42,10 +32,11 @@ class Plan:
     no_domain: list = field(default_factory=list)
     edgar: dict = field(default_factory=dict)  # EDGAR status -> company names; empty if EDGAR is off
     edgar_conflicts: list = field(default_factory=list)  # (company name, name on file with the SEC)
+    edgar_unverified: list = field(default_factory=list)  # (company name, reason): SEC name matches not written
 
 
 def enriched_values(candidate):
-    """The HubSpot property values a matched candidate provides. Missing data is left out, not blanked."""
+    """Missing data is left out, not blanked."""
     values = {
         "wikidata_id": candidate.qid,
         "wikidata_industry": "; ".join(candidate.industries) or None,
@@ -56,7 +47,7 @@ def enriched_values(candidate):
 
 
 def match_values(status, score, reasons, today):
-    """Match outcome properties, written for every company checked. An empty string clears a stale value."""
+    """Written for every company checked. "" clears a stale value."""
     return {
         "wikidata_match_status": status,
         "wikidata_match_score": "" if score is None else str(score),
@@ -66,7 +57,7 @@ def match_values(status, score, reasons, today):
 
 
 def same_value(current, new):
-    """HubSpot returns every value as a string; compare numbers numerically ("2002" == "2002.0")."""
+    """HubSpot returns strings; numbers compare numerically ("2002" == "2002.0")."""
     if current is None or current == "":
         return new == ""
     try:
@@ -76,7 +67,7 @@ def same_value(current, new):
 
 
 def match_companies(companies, candidates_by_domain):
-    """Choose a Wikidata match for each company with a domain. Returns {company id: MatchResult}."""
+    """{company id: MatchResult} for companies with a domain."""
     results = {}
     for company in companies:
         domain = normalize_domain(company["properties"].get("domain"))
@@ -87,25 +78,59 @@ def match_companies(companies, candidates_by_domain):
     return results
 
 
-def matched_ciks(results):
-    """CIKs of Wikidata-matched companies, for the EDGAR lookup."""
+@dataclass
+class EdgarResults:
+    records: dict  # CIK -> EdgarCompany, or None if the SEC has no such filer
+    ciks: dict  # company id -> (CIK, match method)
+    unverified: dict = field(default_factory=dict)  # company id -> [reason]: name matches not written
+
+
+def wikidata_ciks(results):
     return {
-        normalize_cik(r.candidate.cik)
-        for r in results.values()
+        company_id: normalize_cik(r.candidate.cik)
+        for company_id, r in results.items()
         if r.status == "matched" and r.candidate.cik
     }
 
 
-def edgar_values(result, records, hubspot_name, today):
-    """EDGAR properties for one company. records maps CIK -> EdgarCompany (or None if the SEC has no such filer).
+def name_lookup_hits(companies, results, known, index):
+    """{company id: [CIK]} by exact name, for companies without a CIK yet."""
+    hits = {}
+    for company in companies:
+        if company["id"] in results and company["id"] not in known:
+            ciks = ciks_for_name(index, company["properties"].get("name"))
+            if ciks:
+                hits[company["id"]] = ciks
+    return hits
 
-    The CIK comes from Wikidata, which can attach it to the wrong item, so the
-    SEC's name for the company must agree with HubSpot's before anything is written.
-    Returns (status, values).
-    """
-    cik = normalize_cik(result.candidate.cik) if result.status == "matched" and result.candidate.cik else None
-    if not cik:
+
+def verify_name_hits(companies, hits, records):
+    """(verified {id: CIK}, unverified {id: [reason]}): a unique name match corroborated by state."""
+    props_by_id = {c["id"]: c["properties"] for c in companies}
+    verified, unverified = {}, {}
+    for company_id, ciks in hits.items():
+        if len(ciks) > 1:
+            unverified[company_id] = [f"{len(ciks)} SEC filers share this name: {', '.join(ciks)}"]
+            continue
+        record = records.get(ciks[0])
+        if record is None:
+            continue
+        state = props_by_id[company_id].get("state")
+        if corroborate(record, state):
+            verified[company_id] = ciks[0]
+        else:
+            unverified[company_id] = [
+                f"CIK {ciks[0]} ({record.name}): HubSpot state {state or '(empty)'} matches neither "
+                f"business address {record.business_region or '?'} nor incorporation {record.state_of_incorporation or '?'}"
+            ]
+    return verified, unverified
+
+
+def edgar_values(entry, records, hubspot_name, today):
+    """entry: (CIK, method) or None. Returns (status, values)."""
+    if entry is None:
         return "no_cik", {"edgar_match_status": "no_cik", "edgar_last_checked": today}
+    cik, method = entry
 
     record = records.get(cik)
     if record is None:
@@ -127,25 +152,19 @@ def edgar_values(result, records, hubspot_name, today):
         "edgar_sic_description": record.sic_description,
         "edgar_filer_category": record.filer_category,
         "edgar_state_of_incorporation": record.state_of_incorporation,
+        "edgar_incorporation_source": record.incorporation_source,
         "edgar_business_location": record.business_location,
         "edgar_annual_revenue": record.annual_revenue,
         "edgar_revenue_fiscal_year": record.revenue_fiscal_year,
         "edgar_match_status": "matched",
+        "edgar_match_method": method,
         "edgar_last_checked": today,
     }
     return "matched", {key: str(value) for key, value in values.items() if value is not None}
 
 
-def plan_updates(companies, results, today=None, edgar_records=None):
-    """Decide what to write, without writing anything.
-
-    Every company with a domain gets its match outcome recorded. Only matched
-    companies get Wikidata values; earlier values on a now-unmatched company
-    are left in place, and its status shows the current outcome.
-
-    edgar_records is None when EDGAR isn't configured; then no EDGAR
-    properties are touched at all.
-    """
+def plan_updates(companies, results, today=None, edgar=None):
+    """Decide what to write, without writing. edgar=None leaves EDGAR properties untouched."""
     today = today or datetime.now(timezone.utc).date().isoformat()
     plan = Plan()
 
@@ -173,11 +192,15 @@ def plan_updates(companies, results, today=None, edgar_records=None):
             plan.no_item.append(name)
             desired = match_values("no_item", None, "No Wikidata item has this website.", today)
 
-        if edgar_records is not None:
-            status, values = edgar_values(result, edgar_records, props.get("name"), today)
-            plan.edgar.setdefault(status, []).append(name)
+        if edgar is not None:
+            entry = edgar.ciks.get(company["id"])
+            status, values = edgar_values(entry, edgar.records, props.get("name"), today)
+            key = f"matched ({entry[1]})" if status == "matched" else status
+            plan.edgar.setdefault(key, []).append(name)
             if status == "name_conflict":
                 plan.edgar_conflicts.append((name, values["edgar_name"]))
+            for reason in edgar.unverified.get(company["id"], []):
+                plan.edgar_unverified.append((name, reason))
             desired.update(values)
 
         changed = {
@@ -194,7 +217,6 @@ def plan_updates(companies, results, today=None, edgar_records=None):
 
 
 def describe(scored):
-    """One line of audit trail: which item, its score, and why."""
     c = scored.candidate
     return f"{c.qid} ({c.label or 'no label'}) score {scored.score}: {'; '.join(scored.reasons)}"
 
@@ -237,17 +259,22 @@ def print_report(plan, dry_run, errors=()):
     if not plan.edgar:
         print("\nEDGAR: skipped (set SEC_USER_AGENT in .env to enable)")
     else:
-        print("\nEDGAR (by CIK from Wikidata):")
+        print("\nEDGAR:")
         for status, label in [
-            ("matched", "Matched"),
+            ("matched (wikidata_cik)", "Matched, CIK from Wikidata"),
+            ("matched (sec_name_lookup)", "Matched, SEC name lookup corroborated by state"),
             ("name_conflict", "Name conflict, needs review"),
             ("not_found", "CIK not found in EDGAR"),
-            ("no_cik", "No CIK available"),
+            ("no_cik", "No CIK found"),
         ]:
             names = plan.edgar.get(status, [])
             print(f"  {label}: {len(names)}" + (f"  ({', '.join(sorted(names))})" if names else ""))
         for name, sec_name in plan.edgar_conflicts:
             print(f"      {name}: the SEC has this CIK registered to {sec_name!r}")
+        if plan.edgar_unverified:
+            print("  SEC name matches not written (unverified):")
+            for name, reason in plan.edgar_unverified:
+                print(f"      {name}: {reason}")
 
     if errors:
         print(f"\nFailed: {len(errors)}")
@@ -285,14 +312,13 @@ def main(argv=None):
     with timed(timings, "Matching"):
         results = match_companies(companies, candidates)
 
-    edgar_records = None
+    edgar = None
     sec_user_agent = load_sec_user_agent()
     if sec_user_agent:
-        with timed(timings, "EDGAR: fetch"):
-            edgar_records = EdgarClient(sec_user_agent).companies(matched_ciks(results))
+        edgar = run_edgar(EdgarClient(sec_user_agent), wikidata, companies, results, timings)
 
     with timed(timings, "Planning"):
-        plan = plan_updates(companies, results, edgar_records=edgar_records)
+        plan = plan_updates(companies, results, edgar=edgar)
     plan.no_domain = [
         c["properties"].get("name") or f"(company {c['id']})"
         for c in all_companies
@@ -307,6 +333,34 @@ def main(argv=None):
     print_report(plan, args.dry_run, errors)
     print_timings(timings)
     return 1 if errors else 0
+
+
+def run_edgar(edgar_client, wikidata, companies, results, timings):
+    """CIKs from Wikidata, then SEC name lookup; name-found CIKs are looked up in Wikidata too (updates results)."""
+    with timed(timings, "EDGAR: fetch"):
+        known = wikidata_ciks(results)
+        index = index_by_name(edgar_client.ticker_list())
+        hits = name_lookup_hits(companies, results, known, index)
+        wanted = set(known.values()) | {cik for ciks in hits.values() for cik in ciks}
+        records = edgar_client.companies(wanted)
+
+    verified, unverified = verify_name_hits(companies, hits, records)
+
+    reverse = wikidata.find_by_cik(set(verified.values()))
+    timings["Wikidata: find candidates"] = wikidata.timings["Wikidata: find candidates"]
+    timings["Wikidata: fetch details"] = wikidata.timings["Wikidata: fetch details"]
+    timings["Organization check (local)"] = wikidata.timings["Organization check (local)"]
+
+    props_by_id = {c["id"]: c["properties"] for c in companies}
+    for company_id, cik in verified.items():
+        if results[company_id].status != "matched" and reverse.get(cik):
+            result = choose_candidate(reverse[cik], props_by_id[company_id])
+            if result.status == "matched":
+                results[company_id] = result
+
+    ciks = {company_id: (cik, "wikidata_cik") for company_id, cik in known.items()}
+    ciks.update({company_id: (cik, "sec_name_lookup") for company_id, cik in verified.items()})
+    return EdgarResults(records=records, ciks=ciks, unverified=unverified)
 
 
 @contextmanager

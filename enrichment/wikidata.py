@@ -1,21 +1,4 @@
-"""Look up companies in Wikidata by their official website.
-
-Wikidata is used only to fetch data; every judgement happens here, in Python:
-
-1. One small SPARQL query finds items whose official website (P856) matches a
-   domain, with the website's rank and the item's sitelink count. (~0.5s)
-2. The entity API returns labels, aliases and statements for those items, plus
-   labels for their industries and countries. (~1s)
-3. Whether an item is an organization is decided by walking its types up
-   Wikidata's subclass tree here, with a cache. Asking the query service to do
-   that walk (wdt:P31/wdt:P279*) took ~30s and ate Wikidata's per-client query
-   time budget.
-4. A matched item that isn't an organization (often a product, like GitLab's)
-   is not used directly, but its "developer" and "owned by" links are followed
-   to find the company behind it. Links from people are never followed.
-
-Choosing between candidates is the job of enrichment/matching.py.
-"""
+"""Wikidata candidates by official website. Wikidata only fetches; classification happens here (see README)."""
 
 import time
 from collections import defaultdict
@@ -30,7 +13,6 @@ from enrichment.retries import request_with_retries
 SPARQL_URL = "https://query.wikidata.org/sparql"
 API_URL = "https://www.wikidata.org/w/api.php"
 
-# Wikimedia asks API clients to identify themselves with a contact point.
 USER_AGENT = (
     "hubspot-company-enrichment/0.1 "
     "(https://github.com/veavibork/hubspot-company-enrichment)"
@@ -43,7 +25,7 @@ ORGANIZATION = "Q43229"
 HUMAN = "Q5"
 MAX_CLASS_DEPTH = 10
 
-# Links followed from a non-organization match (e.g. a product) to the company behind it.
+# Followed from non-organization matches (e.g. products) to the company behind them.
 FOLLOWED_LINKS = {"P178": "developer", "P127": "owner"}
 
 CANDIDATE_QUERY = """
@@ -56,12 +38,20 @@ SELECT ?site ?item ?rank ?sitelinks WHERE {
 }
 """
 
+CIK_QUERY = """
+SELECT ?cik ?item ?sitelinks WHERE {
+  VALUES ?cik { %s }
+  ?item wdt:P5531 ?cik ;
+        wikibase:sitelinks ?sitelinks .
+}
+"""
+
 RANKS = {
     "http://wikiba.se/ontology#PreferredRank": "preferred",
     "http://wikiba.se/ontology#NormalRank": "normal",
     "http://wikiba.se/ontology#DeprecatedRank": "deprecated",
 }
-# "linked" means the item wasn't matched by website at all, but reached by following a link.
+# "linked": reached by following a link, not matched by website.
 RANK_ORDER = {"preferred": 2, "normal": 1, "deprecated": 0, "linked": -1}
 
 
@@ -79,11 +69,10 @@ class Candidate:
     cik: str | None = None
     industries: list[str] = field(default_factory=list)
     employee_count: int | None = None
-    found_via: str | None = None  # set when reached through a link rather than by website
+    found_via: str | None = None
 
 
 def url_variants(domain):
-    """The forms a website is commonly recorded in: http/https, www or not, trailing slash or not."""
     return [
         f"{scheme}://{host}{slash}"
         for scheme in ("https", "http")
@@ -104,11 +93,11 @@ class WikidataClient:
         self.max_retries = max_retries
         self.base_delay = base_delay
         self.sleep = sleep
-        self.class_parents = {}  # class QID -> its P279 parents, cached across lookups
-        self.timings = defaultdict(float)  # phase -> seconds, for the run report
+        self.class_parents = {}  # class QID -> P279 parents
+        self.timings = defaultdict(float)
 
     def find_candidates(self, domains):
-        """Return {domain: [Candidate, ...]} for every domain given. Domains with no match map to []."""
+        """{domain: [Candidate]}; [] when nothing matched."""
         domains = list(dict.fromkeys(domains))
         candidates = {d: [] for d in domains}
 
@@ -120,8 +109,6 @@ class WikidataClient:
 
         entities, labels = self._fetch_details({m["qid"] for m in matches})
 
-        # Products and other non-organizations often name the company behind
-        # them. Those links are followed below; people's links never are.
         links = []  # (domain, target QID, how it was found)
         for m in matches:
             entity = entities.get(m["qid"])
@@ -132,6 +119,7 @@ class WikidataClient:
             )
             candidates[m["domain"]].append(candidate)
 
+            # People's links are never followed: wrong-company risk, and personal data.
             if not candidate.is_organization and not is_person(entity):
                 for prop, relation in FOLLOWED_LINKS.items():
                     for target in entity_ids(entity, prop):
@@ -158,8 +146,41 @@ class WikidataClient:
 
         return {d: merge_duplicates(c) for d, c in candidates.items()}
 
+    def find_by_cik(self, ciks):
+        """Reverse lookup for CIKs found in EDGAR: {cik: [organization Candidate]}."""
+        ciks = sorted(set(ciks))
+        found = {cik: [] for cik in ciks}
+        if not ciks:
+            return found
+
+        started = time.perf_counter()
+        # Wikidata usually zero-pads CIKs, but not always.
+        values = " ".join(f'"{form}"' for cik in ciks for form in {cik, cik.lstrip("0")})
+        resp = self._send(
+            "POST",
+            SPARQL_URL,
+            data={"query": CIK_QUERY % values},
+            headers={"Accept": "application/sparql-results+json"},
+        )
+        rows = [
+            (row["cik"]["value"].zfill(10), row["item"]["value"].rsplit("/", 1)[-1], int(row["sitelinks"]["value"]))
+            for row in resp.json()["results"]["bindings"]
+        ]
+        self.timings["Wikidata: find candidates"] += time.perf_counter() - started
+
+        entities, labels = self._fetch_details({qid for _, qid, _ in rows})
+        for cik, qid, sitelinks in rows:
+            entity = entities.get(qid)
+            if entity is None or cik not in found:
+                continue
+            candidate = self._build(
+                entity, labels, sitelinks=sitelinks, website_rank="linked", found_via=f"SEC CIK {cik}"
+            )
+            if candidate.is_organization:
+                found[cik].append(candidate)
+        return found
+
     def _fetch_details(self, qids, with_sitelinks=False):
-        """Fetch entities plus the labels of their industries and countries."""
         started = time.perf_counter()
         props = "labels|aliases|claims" + ("|sitelinks" if with_sitelinks else "")
         entities = self.get_entities(qids, props=props)
@@ -191,7 +212,6 @@ class WikidataClient:
         return list(parse_search_results(resp.json()))
 
     def get_entities(self, qids, props):
-        """Fetch entities by QID in batches of 50. Returns {qid: entity JSON}."""
         qids = sorted(qids)
         entities = {}
         for start in range(0, len(qids), ENTITIES_PER_REQUEST):
@@ -210,7 +230,6 @@ class WikidataClient:
         return {qid: e for qid, e in entities.items() if "missing" not in e}
 
     def is_organization(self, type_qids):
-        """True if any type is "organization" or a subclass of it, walking P279 up to MAX_CLASS_DEPTH levels."""
         frontier, seen = set(type_qids), set()
         for _ in range(MAX_CLASS_DEPTH):
             if ORGANIZATION in frontier:
@@ -241,11 +260,7 @@ class WikidataClient:
         return resp
 
 
-# --- Parsing ------------------------------------------------------------------
-
-
 def parse_search_results(data):
-    """Yield {"domain", "qid", "rank", "sitelinks"} for each SPARQL result row."""
     for row in data["results"]["bindings"]:
         yield {
             "domain": normalize_domain(row["site"]["value"]),
@@ -279,7 +294,7 @@ def build_candidate(entity, labels, sitelinks, website_rank, is_organization, fo
 
 
 def statements(entity, prop):
-    """Usable statements for a property: deprecated ones dropped, preferred ones winning if present."""
+    """Non-deprecated statements; preferred ones win if present."""
     usable = [
         s
         for s in entity.get("claims", {}).get(prop, [])
@@ -306,12 +321,11 @@ def is_person(entity):
 
 
 def linked_ids(entity):
-    """Items whose labels we need: industries and countries."""
     return entity_ids(entity, "P452") + entity_ids(entity, "P17")
 
 
 def label(entity):
-    """English label, falling back to "mul" (Wikidata's language-neutral label, which some items, Etsy among them, use instead)."""
+    # Some items (Etsy) only have a language-neutral "mul" label.
     labels = entity.get("labels", {})
     for lang in ("en", "mul"):
         if lang in labels:
@@ -325,7 +339,7 @@ def aliases(entity):
 
 
 def employee_entries(entity):
-    """Employee counts as "count@date" strings; date is empty when the statement has no point in time (P585)."""
+    """ "35000@2023-01-31T00:00:00Z", or "35000@" without a point-in-time qualifier."""
     entries = []
     for s in entity.get("claims", {}).get("P1128", []):
         if s.get("rank") == "deprecated" or s["mainsnak"].get("snaktype") != "value":
@@ -338,7 +352,7 @@ def employee_entries(entity):
 
 
 def merge_duplicates(candidates):
-    """One item can match several URL variants; keep it once, with its best website rank."""
+    """An item matched via several URL variants is kept once, with its best rank."""
     best = {}
     for c in candidates:
         current = best.get(c.qid)
@@ -348,12 +362,7 @@ def merge_duplicates(candidates):
 
 
 def latest_employee_count(entries):
-    """Pick the employee count with the most recent "point in time" date.
-
-    Entries look like "35000@2023-01-31T00:00:00Z", or "35000@" when undated.
-    Undated values are only used when there's exactly one value in total,
-    because there's no principled way to choose between several undated ones.
-    """
+    """Most recent dated value; an undated one only if it's the only value."""
     dated, undated = [], []
     for entry in entries:
         count, _, date = entry.partition("@")
@@ -371,7 +380,7 @@ def latest_employee_count(entries):
 
 
 def _year(timestamp):
-    """Wikidata dates look like "+2002-01-01T00:00:00Z". BCE dates start with "-" and are ignored."""
+    """ "+2002-01-01T00:00:00Z" -> 2002; BCE dates ("-...") -> None."""
     if not timestamp or timestamp.startswith("-"):
         return None
     try:

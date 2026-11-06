@@ -1,16 +1,6 @@
-"""Look up companies in SEC EDGAR by CIK (the SEC's company identifier).
+"""SEC EDGAR company records by CIK: filer metadata, annual revenue, and the 10-K cover page."""
 
-Two endpoints per company:
-- submissions: name, tickers, exchanges, industry (SIC), filer category,
-  state of incorporation and business address. Exists for any SEC filer,
-  including private companies that only file Form D when raising money.
-- companyfacts: XBRL financial data from filings. Only exists for companies
-  that file financial statements, i.e. public ones.
-
-The SEC requires every automated client to identify itself with a contact
-email in the User-Agent, and allows at most 10 requests per second.
-"""
-
+import re
 import time
 from dataclasses import dataclass, field
 from datetime import date
@@ -18,13 +8,15 @@ from datetime import date
 import requests
 
 from enrichment.retries import request_with_retries
+from enrichment.sec_lookup import state_code
 
 SEC_DATA_URL = "https://data.sec.gov"
+SEC_ARCHIVES_URL = "https://www.sec.gov/Archives/edgar/data"
+TICKER_LIST_URL = "https://www.sec.gov/files/company_tickers.json"
 
-# The SEC's limit is 10 requests/second; stay a little under it.
-MIN_SECONDS_BETWEEN_REQUESTS = 0.12
+MIN_SECONDS_BETWEEN_REQUESTS = 0.12  # SEC limit is 10/second
 
-# Companies report revenue under different XBRL concepts; checked in this order.
+# Companies report revenue under different XBRL concepts.
 REVENUE_CONCEPTS = [
     "RevenueFromContractWithCustomerExcludingAssessedTax",
     "Revenues",
@@ -43,13 +35,15 @@ class EdgarCompany:
     sic_description: str | None = None
     filer_category: str | None = None
     state_of_incorporation: str | None = None
+    incorporation_source: str | None = None
     business_location: str | None = None
+    business_region: str | None = None  # US state or SEC country code
     annual_revenue: int | None = None
     revenue_fiscal_year: int | None = None
 
 
 def normalize_cik(cik):
-    """EDGAR URLs need the CIK as 10 digits: "1616707" -> "0001616707"."""
+    """ "1616707" -> "0001616707" """
     digits = "".join(ch for ch in str(cik) if ch.isdigit())
     return digits.zfill(10) if digits else None
 
@@ -64,8 +58,16 @@ class EdgarClient:
         self.clock = clock
         self._last_request = None
 
+    def ticker_list(self):
+        """[{"cik", "ticker", "title"}] for every listed company."""
+        data = self._get_json(TICKER_LIST_URL) or {}
+        return [
+            {"cik": normalize_cik(row["cik_str"]), "ticker": row["ticker"], "title": row["title"]}
+            for row in data.values()
+        ]
+
     def companies(self, ciks):
-        """Return {cik: EdgarCompany, or None if the SEC has no such filer} for each CIK."""
+        """{cik: EdgarCompany, or None if the SEC has no such filer}"""
         return {cik: self.company(cik) for cik in sorted({normalize_cik(c) for c in ciks if normalize_cik(c)})}
 
     def company(self, cik):
@@ -74,10 +76,27 @@ class EdgarClient:
         if submissions is None:
             return None
         facts = self._get_json(f"{SEC_DATA_URL}/api/xbrl/companyfacts/CIK{cik}.json")
-        return build_company(cik, submissions, facts)
+        company = build_company(cik, submissions, facts)
+
+        # Filer metadata is often wrong about incorporation; the 10-K cover page is authoritative.
+        url = latest_annual_report_url(cik, submissions)
+        if url:
+            stated = cover_page_incorporation(self._get_text(url))
+            if stated:
+                company.state_of_incorporation = state_code(stated) or stated
+                company.incorporation_source = "annual report cover page"
+        return company
 
     def _get_json(self, url):
-        """GET with throttling and retries. Returns None on 404."""
+        resp = self._get(url)
+        return None if resp is None else resp.json()
+
+    def _get_text(self, url):
+        resp = self._get(url)
+        return None if resp is None else resp.text
+
+    def _get(self, url):
+        """None on 404."""
         self._throttle()
         resp = request_with_retries(
             self.session,
@@ -90,7 +109,7 @@ class EdgarClient:
         if resp.status_code == 404:
             return None
         resp.raise_for_status()
-        return resp.json()
+        return resp
 
     def _throttle(self):
         now = self.clock()
@@ -114,18 +133,40 @@ def build_company(cik, submissions, facts):
         sic_description=submissions.get("sicDescription") or None,
         filer_category=clean_category(submissions.get("category")),
         state_of_incorporation=submissions.get("stateOfIncorporation") or None,
+        incorporation_source="SEC filer metadata" if submissions.get("stateOfIncorporation") else None,
         business_location=format_location(address.get("city"), address.get("stateOrCountry")),
+        business_region=address.get("stateOrCountry") or None,
         annual_revenue=revenue[0] if revenue else None,
         revenue_fiscal_year=revenue[1] if revenue else None,
     )
 
 
-def latest_annual_revenue(facts):
-    """Return (revenue, fiscal year) from the most recent full-year figure in an annual report, or None.
+def latest_annual_report_url(cik, submissions):
+    # Filings are listed newest first.
+    recent = submissions.get("filings", {}).get("recent", {})
+    for form, accession, document in zip(
+        recent.get("form", []), recent.get("accessionNumber", []), recent.get("primaryDocument", [])
+    ):
+        if form in ANNUAL_FORMS and document:
+            return f"{SEC_ARCHIVES_URL}/{int(cik)}/{accession.replace('-', '')}/{document}"
+    return None
 
-    Only facts from annual forms, marked full-year ("FY"), covering roughly
-    twelve months count, so quarterly figures and partial periods are ignored.
-    """
+
+def cover_page_incorporation(html):
+    """Value of the inline-XBRL cover tag, e.g. "Delaware"; inner formatting tags are stripped."""
+    if not html:
+        return None
+    match = re.search(
+        r'name="dei:EntityIncorporationStateCountryCode"[^>]*>(.*?)</ix:nonNumeric>', html, re.S | re.I
+    )
+    if not match:
+        return None
+    value = " ".join(re.sub(r"<[^>]+>", " ", match.group(1)).split())
+    return value or None
+
+
+def latest_annual_revenue(facts):
+    """(revenue, fiscal year) of the latest ~12-month "FY" figure from an annual form, or None."""
     if not facts:
         return None
     gaap = facts.get("facts", {}).get("us-gaap", {})
@@ -147,13 +188,13 @@ def latest_annual_revenue(facts):
 
 
 def clean_category(category):
-    """EDGAR returns e.g. "Non-accelerated filer<br>Smaller reporting company"; HTML doesn't belong in a CRM field."""
+    """ "Non-accelerated filer<br>Smaller reporting company" -> "...filer; Smaller..." """
     if not category:
         return None
     return "; ".join(part.strip() for part in category.split("<br>") if part.strip())
 
 
 def format_location(city, region):
-    """("LOUISVILLE", "CO") -> "Louisville, CO". Region is a US state or an SEC country code."""
+    """ ("LOUISVILLE", "CO") -> "Louisville, CO" """
     parts = [city.title() if city else None, region or None]
     return ", ".join(p for p in parts if p) or None

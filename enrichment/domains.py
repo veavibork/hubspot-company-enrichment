@@ -1,19 +1,8 @@
-"""Domain normalization, so the same company always produces the same key."""
-
 from urllib.parse import urlsplit
 
 
 def normalize_domain(value):
-    """Reduce a website or domain to a bare, lowercase hostname.
-
-    "https://www.Acme.com/about?x=1" -> "acme.com"
-
-    Only a leading "www." is stripped. Other subdomains (e.g. "shop.acme.com")
-    are kept, because telling a subdomain from a registrable domain
-    ("acme.co.uk") correctly requires the Public Suffix List.
-
-    Returns None when the value can't be a domain.
-    """
+    """"https://www.Acme.com/about" -> "acme.com". Only "www." is stripped; None if not a domain."""
     if not value or not value.strip():
         return None
 

@@ -1,11 +1,4 @@
-"""Report trailing words in real company names that aren't in NAME_SUFFIXES.
-
-    python -m enrichment.check_suffixes
-
-Looks at HubSpot company names plus the labels and aliases of every Wikidata
-organization matched by domain. Use the output to decide, word by word,
-whether NAME_SUFFIXES is missing a genuine legal form. It changes nothing.
-"""
+"""List trailing words in HubSpot and Wikidata company names not covered by NAME_SUFFIXES. Read-only."""
 
 import re
 from collections import defaultdict
@@ -18,7 +11,7 @@ from enrichment.wikidata import WikidataClient
 
 
 def unknown_trailing_words(names):
-    """Return {word: [names ending in it]} for multi-word names whose last word isn't a known suffix."""
+    """{word: [names ending in it]} for multi-word names."""
     found = defaultdict(list)
     for name in names:
         words = re.sub(r"[^\w\s]", " ", name.lower()).split()
