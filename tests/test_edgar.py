@@ -174,3 +174,88 @@ def test_companies_deduplicates_ciks():
 
     assert list(found) == [CIK]
     assert len(responses.calls) == 2
+
+
+@responses.activate
+def test_ticker_list_normalizes_ciks():
+    from enrichment.edgar import TICKER_LIST_URL
+
+    responses.get(
+        TICKER_LIST_URL,
+        json={"0": {"cik_str": 1439725, "ticker": "BDSX", "title": "BIODESIX INC"}},
+    )
+
+    rows = EdgarClient("ua", sleep=lambda s: None).ticker_list()
+
+    assert rows == [{"cik": CIK, "ticker": "BDSX", "title": "BIODESIX INC"}]
+
+
+# --- State of incorporation from the annual report cover page --------------
+
+from enrichment.edgar import SEC_ARCHIVES_URL, cover_page_incorporation, latest_annual_report_url  # noqa: E402
+
+COVER_HTML = (
+    '<ix:nonNumeric contextRef="c1" name="dei:EntityIncorporationStateCountryCode" '
+    'format="ixt-sec:stateprovnameen"><span style="x">Delaware</span></ix:nonNumeric>'
+)
+
+
+def submissions_with_filings(forms):
+    return {
+        **SUBMISSIONS,
+        "stateOfIncorporation": "NY",
+        "filings": {
+            "recent": {
+                "form": forms,
+                "accessionNumber": [f"0000000000-26-00000{i}" for i in range(len(forms))],
+                "primaryDocument": [f"doc{i}.htm" for i in range(len(forms))],
+            }
+        },
+    }
+
+
+def test_latest_annual_report_url_skips_other_forms():
+    url = latest_annual_report_url(CIK, submissions_with_filings(["8-K", "10-Q", "10-K", "10-K"]))
+
+    assert url == f"{SEC_ARCHIVES_URL}/1439725/000000000026000002/doc2.htm"
+
+
+def test_no_annual_report_means_no_url():
+    assert latest_annual_report_url(CIK, submissions_with_filings(["D", "D"])) is None
+
+
+@pytest.mark.parametrize(
+    "html, expected",
+    [
+        (COVER_HTML, "Delaware"),
+        ('<ix:nonNumeric name="dei:EntityIncorporationStateCountryCode">DE</ix:nonNumeric>', "DE"),
+        ("<html>no tag here</html>", None),
+        (None, None),
+    ],
+)
+def test_cover_page_incorporation(html, expected):
+    assert cover_page_incorporation(html) == expected
+
+
+@responses.activate
+def test_cover_page_overrides_outdated_metadata():
+    submissions = submissions_with_filings(["10-K"])
+    responses.get(SUBMISSIONS_URL, json=submissions)
+    responses.get(FACTS_URL, json=FACTS)
+    responses.get(f"{SEC_ARCHIVES_URL}/1439725/000000000026000000/doc0.htm", body=COVER_HTML)
+
+    company = EdgarClient("ua", sleep=lambda s: None).company(CIK)
+
+    assert company.state_of_incorporation == "DE"
+    assert company.incorporation_source == "annual report cover page"
+
+
+@responses.activate
+def test_metadata_used_when_there_is_no_annual_report():
+    responses.get(SUBMISSIONS_URL, json=submissions_with_filings(["D"]))
+    responses.get(FACTS_URL, status=404)
+
+    company = EdgarClient("ua", sleep=lambda s: None).company(CIK)
+
+    assert company.state_of_incorporation == "NY"
+    assert company.incorporation_source == "SEC filer metadata"
