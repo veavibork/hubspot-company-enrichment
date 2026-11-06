@@ -1,5 +1,9 @@
 # HubSpot Company Enrichment
 
+[![CI](https://github.com/veavibork/hubspot-company-enrichment/actions/workflows/ci.yml/badge.svg)](https://github.com/veavibork/hubspot-company-enrichment/actions/workflows/ci.yml)
+
+A proof of concept built as a portfolio piece, tested on 16 sample companies. It's built to production habits (tests, retries, dry run, audit trail) but not production scale; see [Limitations and next steps](#limitations-and-next-steps).
+
 Enriches HubSpot company records from two open sources, matched by website domain:
 
 - **[Wikidata](https://www.wikidata.org/)**: founding year, industry, employee count.
@@ -197,6 +201,7 @@ data/                 sample companies, generated country table
 hubspot/              HubSpot app: configuration (scopes) and the UI card (src/app/cards/)
 docs/                 screenshots
 tests/
+.github/workflows/    CI: Python tests and card checks on every push and pull request
 ```
 
 ## Limitations and next steps
@@ -212,7 +217,7 @@ tests/
 Next steps:
 
 - **Class tree cache.** The organization check (~5s) could persist Wikidata's class tree between runs, with a maximum age.
-- **GitHub Actions.** Run tests and card checks on every pull request; run enrichment on a schedule with the token as a repository secret, so failures alert by email.
+- **Scheduled runs.** CI already runs the tests and card checks on every push and pull request; a scheduled GitHub Actions job could run enrichment with the token as a repository secret, so failures alert by email.
 - **Fix the source data upstream.** Wikidata's GitLab *product* item carries GitLab Inc.'s SEC CIK and a stray "Zoom" alias; Biodesix's item lacks its website and CIK. Correcting those would let the website match find both directly.
 
 ## Data and licensing
