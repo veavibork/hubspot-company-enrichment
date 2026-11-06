@@ -11,3 +11,6 @@ __pycache__/
 
 # Run output
 *.log
+
+# Personal notes
+INTERVIEW_PREP.md
