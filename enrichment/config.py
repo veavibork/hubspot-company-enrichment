@@ -13,6 +13,12 @@ HUBSPOT_API_VERSION = "2026-09"
 HUBSPOT_BATCH_SIZE = 100
 
 
+def load_sec_user_agent():
+    """The SEC requires a contact email in the User-Agent. Returns None if not configured."""
+    load_dotenv()
+    return os.getenv("SEC_USER_AGENT") or None
+
+
 def load_hubspot_token():
     """Read the HubSpot access token from the environment (or .env)."""
     load_dotenv()

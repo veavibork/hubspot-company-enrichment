@@ -1,4 +1,5 @@
-from enrichment.cli import enriched_values, plan_updates, same_value
+from enrichment.cli import enriched_values, match_companies, matched_ciks, plan_updates, same_value
+from enrichment.edgar import EdgarCompany
 from enrichment.wikidata import Candidate
 
 TODAY = "2026-11-06"
@@ -19,8 +20,10 @@ def company(id_, name, domain, **props):
     return {"id": id_, "properties": {"name": name, "domain": domain, **props}}
 
 
-def plan(companies, candidates):
-    return plan_updates(companies, candidates, today=TODAY)
+def plan(companies, candidates, edgar_records=None):
+    return plan_updates(
+        companies, match_companies(companies, candidates), today=TODAY, edgar_records=edgar_records
+    )
 
 
 def test_enriched_values_leaves_out_missing_data():
@@ -162,3 +165,92 @@ def test_same_value_compares_numbers_numerically_and_blanks_as_equal():
     assert same_value(None, "")
     assert same_value("", "")
     assert not same_value("6", "")
+
+
+# --- EDGAR ------------------------------------------------------------------
+
+WAYFAIR_WITH_CIK = Candidate(
+    qid="Q3540193", label="Wayfair", is_organization=True, founded_year=2002, cik="0001616707"
+)
+
+WAYFAIR_SEC = EdgarCompany(
+    cik="0001616707",
+    name="Wayfair Inc.",
+    tickers=["W"],
+    exchanges=["NYSE"],
+    sic_description="Retail-Catalog & Mail-Order Houses",
+    business_location="Boston, MA",
+    annual_revenue=12457000000,
+    revenue_fiscal_year=2025,
+)
+
+
+def edgar_written(companies, candidates, records):
+    result = plan(companies, candidates, edgar_records=records)
+    return {u["id"]: u["properties"] for u in result.updates}, result
+
+
+def test_matched_ciks_are_normalized_and_only_from_matches():
+    companies = [company("1", "Wayfair", "wayfair.com"), company("2", "Dandy", "meetdandy.com")]
+    results = match_companies(companies, {"wayfair.com": [WAYFAIR_WITH_CIK], "meetdandy.com": []})
+
+    assert matched_ciks(results) == {"0001616707"}
+
+
+def test_edgar_values_written_when_sec_name_agrees():
+    written, result = edgar_written(
+        [company("1", "Wayfair", "wayfair.com")],
+        {"wayfair.com": [WAYFAIR_WITH_CIK]},
+        {"0001616707": WAYFAIR_SEC},
+    )
+
+    props = written["1"]
+    assert props["edgar_cik"] == "0001616707"
+    assert props["edgar_ticker"] == "W"
+    assert props["edgar_annual_revenue"] == "12457000000"
+    assert props["edgar_revenue_fiscal_year"] == "2025"
+    assert props["edgar_match_status"] == "matched"
+    assert "edgar_state_of_incorporation" not in props  # missing data is left out, not blanked
+    assert result.edgar == {"matched": ["Wayfair"]}
+
+
+def test_edgar_name_conflict_writes_no_data():
+    wrong = EdgarCompany(cik="0001616707", name="Totally Different Holdings", tickers=["X"])
+
+    written, result = edgar_written(
+        [company("1", "Wayfair", "wayfair.com")],
+        {"wayfair.com": [WAYFAIR_WITH_CIK]},
+        {"0001616707": wrong},
+    )
+
+    props = written["1"]
+    assert props["edgar_match_status"] == "name_conflict"
+    assert props["edgar_name"] == "Totally Different Holdings"
+    assert "edgar_ticker" not in props
+    assert result.edgar_conflicts == [("Wayfair", "Totally Different Holdings")]
+
+
+def test_edgar_cik_unknown_to_the_sec():
+    written, _ = edgar_written(
+        [company("1", "Wayfair", "wayfair.com")],
+        {"wayfair.com": [WAYFAIR_WITH_CIK]},
+        {"0001616707": None},
+    )
+
+    assert written["1"]["edgar_match_status"] == "not_found"
+
+
+def test_no_cik_without_a_wikidata_match():
+    written, result = edgar_written([company("1", "Dandy", "meetdandy.com")], {"meetdandy.com": []}, {})
+
+    assert written["1"]["edgar_match_status"] == "no_cik"
+    assert result.edgar == {"no_cik": ["Dandy"]}
+
+
+def test_edgar_off_touches_no_edgar_properties():
+    written, result = edgar_written(
+        [company("1", "Wayfair", "wayfair.com")], {"wayfair.com": [WAYFAIR_WITH_CIK]}, None
+    )
+
+    assert not any(key.startswith("edgar_") for key in written["1"])
+    assert result.edgar == {}
