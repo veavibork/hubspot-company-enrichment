@@ -4,7 +4,8 @@ Every candidate already shares the company's website. That's necessary but
 not sufficient: people, software products and duplicate legal-entity records
 list the same website. So:
 
-1. Only organizations are considered.
+1. Only organizations are considered. (Companies reached by following a
+   product's "developer" or "owned by" link count, and are scored the same way.)
 2. Each organization is scored on independent evidence: name, website rank,
    and agreement with what HubSpot already knows (founded year, country,
    employee count). HubSpot-based signals count only when HubSpot has a value.
@@ -116,7 +117,10 @@ def score_candidate(candidate, company):
     elif name_points == NAME_PARTIAL:
         add(NAME_PARTIAL, "name partly matches")
 
-    if candidate.website_rank == "preferred":
+    if candidate.found_via:
+        # Reached through a link, so its own website played no part; it has to win on evidence.
+        add(0, f"found via {candidate.found_via}")
+    elif candidate.website_rank == "preferred":
         add(RANK_PREFERRED, "website is Wikidata's preferred value")
     elif candidate.website_rank == "deprecated":
         add(RANK_DEPRECATED, "website is marked deprecated in Wikidata")

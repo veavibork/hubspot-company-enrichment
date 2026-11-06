@@ -45,6 +45,34 @@ def test_evidence_beats_popularity():
     assert result.candidate.qid == "Q89269703"
 
 
+def test_company_found_via_product_link_wins_on_evidence():
+    # GitLab: the website matches a product item; its "developer" link leads to the company.
+    product = Candidate(qid="Q16639197", label="GitLab", is_organization=False, sitelinks=30)
+    company = org(
+        "Q55589254",
+        "GitLab Inc.",
+        founded_year=2011,
+        country_code="US",
+        website_rank="linked",
+        found_via="developer of Q16639197 (GitLab)",
+    )
+
+    result = choose_candidate(
+        [product, company], {"name": "GitLab", "founded_year": "2011", "country": "United States"}
+    )
+
+    assert result.status == "matched"
+    assert result.candidate.qid == "Q55589254"
+    assert "+0 found via developer of Q16639197 (GitLab)" in result.best.reasons
+    assert result.best.score == 6
+
+
+def test_linked_candidate_gets_no_website_rank_points():
+    linked = org("Q1", "Acme", website_rank="linked", found_via="owner of Q2 (Acme App)")
+
+    assert score_candidate(linked, {"name": "Acme"}).score == 3
+
+
 def test_duplicate_legal_entity_loses_to_better_corroborated_record():
     main = org("Q7858039", "Twilio", founded_year=2008, country="United States", country_code="US", sitelinks=16)
     duplicate = org("Q131884087", "Twilio Inc.", country="United States", country_code="US")
