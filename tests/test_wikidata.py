@@ -346,3 +346,13 @@ def test_find_by_cik_reverse_lookup():
     assert found["0001439725"] == []
     query = parse_qs(responses.calls[0].request.body)["query"][0]
     assert '"0001439725"' in query and '"1439725"' in query  # padded and unpadded forms
+
+
+def test_build_query_drops_anything_that_is_not_a_normalized_hostname():
+    from enrichment.wikidata import build_query
+
+    query = build_query(["wayfair.com", 'evil.com> } SELECT * WHERE { ?s ?p ?o', "WWW.Etsy.com"])
+
+    assert "<https://wayfair.com>" in query
+    assert "evil" not in query
+    assert "Etsy" not in query

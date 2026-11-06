@@ -25,6 +25,11 @@ REVENUE_CONCEPTS = [
 ]
 ANNUAL_FORMS = {"10-K", "20-F", "40-F"}
 
+COVER_TAG = re.compile(
+    r'name="dei:EntityIncorporationStateCountryCode"[^>]*>(.*?)</ix:nonNumeric>', re.S | re.I
+)
+MAX_COVER_PAGE_BYTES = 5_000_000  # the tag sits near the top; stop if it's missing
+
 
 @dataclass
 class EdgarCompany:
@@ -81,7 +86,10 @@ class EdgarClient:
         # Filer metadata is often wrong about incorporation; the 10-K cover page is authoritative.
         url = latest_annual_report_url(cik, submissions)
         if url:
-            stated = cover_page_incorporation(self._get_text(url))
+            try:
+                stated = cover_page_incorporation(self._read_cover_page(url))
+            except requests.RequestException:
+                stated = None  # optional: keep the metadata value
             if stated:
                 company.state_of_incorporation = state_code(stated) or stated
                 company.incorporation_source = "annual report cover page"
@@ -91,11 +99,22 @@ class EdgarClient:
         resp = self._get(url)
         return None if resp is None else resp.json()
 
-    def _get_text(self, url):
-        resp = self._get(url)
-        return None if resp is None else resp.text
+    def _read_cover_page(self, url):
+        """Stream an annual report only until the incorporation tag has been read."""
+        resp = self._get(url, stream=True)
+        if resp is None:
+            return None
+        text = ""
+        try:
+            for chunk in resp.iter_content(chunk_size=65536):
+                text += chunk.decode("utf-8", errors="ignore")
+                if COVER_TAG.search(text) or len(text) > MAX_COVER_PAGE_BYTES:
+                    break
+        finally:
+            resp.close()
+        return text
 
-    def _get(self, url):
+    def _get(self, url, **kwargs):
         """None on 404."""
         self._throttle()
         resp = request_with_retries(
@@ -105,6 +124,7 @@ class EdgarClient:
             sleep=self.sleep,
             max_retries=self.max_retries,
             base_delay=self.base_delay,
+            **kwargs,
         )
         if resp.status_code == 404:
             return None
@@ -156,9 +176,7 @@ def cover_page_incorporation(html):
     """Value of the inline-XBRL cover tag, e.g. "Delaware"; inner formatting tags are stripped."""
     if not html:
         return None
-    match = re.search(
-        r'name="dei:EntityIncorporationStateCountryCode"[^>]*>(.*?)</ix:nonNumeric>', html, re.S | re.I
-    )
+    match = COVER_TAG.search(html)
     if not match:
         return None
     value = " ".join(re.sub(r"<[^>]+>", " ", match.group(1)).split())

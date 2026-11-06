@@ -143,3 +143,18 @@ def test_batch_upsert_sets_id_property_on_each_input(client):
             "properties": {"name": "Wayfair"},
         }
     ]
+
+
+@responses.activate
+def test_rejected_chunk_is_reported_and_later_chunks_still_sent(client):
+    responses.post(BATCH_UPDATE_URL, json={"results": [{"id": "x"}] * 100})
+    responses.post(BATCH_UPDATE_URL, status=400, json={"message": "Property values were not valid"})
+    responses.post(BATCH_UPDATE_URL, json={"results": [{"id": "z"}] * 10})
+    inputs = [{"id": str(i), "properties": {}} for i in range(210)]
+
+    results, errors = client.batch_update_companies(inputs)
+
+    assert len(results) == 110
+    assert len(errors) == 1
+    assert "400" in errors[0]["message"] and "batch of 100" in errors[0]["message"]
+    assert len(responses.calls) == 3

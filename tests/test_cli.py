@@ -1,3 +1,5 @@
+import pytest
+
 from enrichment.cli import (
     EdgarResults,
     enriched_values,
@@ -351,3 +353,14 @@ def test_name_lookup_match_is_written_with_its_method():
     assert written["2"]["edgar_ticker"] == "BDSX"
     assert written["2"]["wikidata_match_status"] == "no_item"
     assert result.edgar == {"matched (sec_name_lookup)": ["Biodesix"]}
+
+
+@pytest.mark.parametrize("value", ["0", "-3"])
+def test_limit_must_be_positive(value, capsys):
+    from enrichment.cli import main
+
+    with pytest.raises(SystemExit) as exc:
+        main(["--limit", value])
+
+    assert exc.value.code == 2  # argparse usage error, before anything runs
+    assert "must be 1 or more" in capsys.readouterr().err

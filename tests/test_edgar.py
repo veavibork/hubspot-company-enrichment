@@ -259,3 +259,34 @@ def test_metadata_used_when_there_is_no_annual_report():
 
     assert company.state_of_incorporation == "NY"
     assert company.incorporation_source == "SEC filer metadata"
+
+
+@responses.activate
+def test_cover_page_failure_falls_back_to_metadata_instead_of_crashing():
+    responses.get(SUBMISSIONS_URL, json=submissions_with_filings(["10-K"]))
+    responses.get(FACTS_URL, json=FACTS)
+    url = f"{SEC_ARCHIVES_URL}/1439725/000000000026000000/doc0.htm"
+    for _ in range(3):
+        responses.get(url, status=403)
+
+    company = EdgarClient("ua", max_retries=2, sleep=lambda s: None).company(CIK)
+
+    assert company.state_of_incorporation == "NY"
+    assert company.incorporation_source == "SEC filer metadata"
+    assert company.annual_revenue == 88499000
+
+
+@responses.activate
+def test_cover_page_stops_reading_once_the_tag_is_found():
+    from enrichment.edgar import MAX_COVER_PAGE_BYTES
+
+    responses.get(SUBMISSIONS_URL, json=submissions_with_filings(["10-K"]))
+    responses.get(FACTS_URL, json=FACTS)
+    huge_tail = "x" * (MAX_COVER_PAGE_BYTES * 2)
+    responses.get(f"{SEC_ARCHIVES_URL}/1439725/000000000026000000/doc0.htm", body=COVER_HTML + huge_tail)
+
+    client = EdgarClient("ua", sleep=lambda s: None)
+    text = client._read_cover_page(f"{SEC_ARCHIVES_URL}/1439725/000000000026000000/doc0.htm")
+
+    assert "Delaware" in text
+    assert len(text) < len(COVER_HTML) + 70000  # one chunk past the tag, not the whole document

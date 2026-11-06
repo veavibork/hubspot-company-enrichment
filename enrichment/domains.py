@@ -1,8 +1,13 @@
+import re
 from urllib.parse import urlsplit
+
+# Letters, digits and inner hyphens per label; at least two labels. Domains are
+# interpolated into SPARQL, so nothing else may get through.
+HOSTNAME = re.compile(r"^(?!-)[a-z0-9-]{1,63}(?<!-)(\.(?!-)[a-z0-9-]{1,63}(?<!-))+$")
 
 
 def normalize_domain(value):
-    """"https://www.Acme.com/about" -> "acme.com". Only "www." is stripped; None if not a domain."""
+    """"https://www.Acme.com/about" -> "acme.com". Only "www." is stripped; None if not a valid hostname."""
     if not value or not value.strip():
         return None
 
@@ -24,7 +29,9 @@ def normalize_domain(value):
     if host.startswith("www."):
         host = host[4:]
 
-    if "." not in host or " " in host:
+    try:
+        host = host.encode("idna").decode("ascii")  # "münchen.de" -> "xn--mnchen-3ya.de"
+    except UnicodeError:
         return None
 
-    return host
+    return host if HOSTNAME.match(host) else None

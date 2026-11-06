@@ -32,6 +32,9 @@ class Comparison:
 
 NOT_COMPARABLE = "not comparable (a value is missing)"
 
+# Numbers within this ratio "agree"; the UI card uses the same value.
+AGREEMENT_RATIO = 1.1
+
 
 def _number(value):
     try:
@@ -42,7 +45,7 @@ def _number(value):
 
 def _ratio_bucket(a, b):
     ratio = max(a, b) / min(a, b)
-    if ratio <= 1.1:
+    if ratio <= AGREEMENT_RATIO:
         return "within 10%"
     if ratio <= 1.5:
         return "10-50% apart"
@@ -134,12 +137,10 @@ def print_text(comparisons, industry_rows):
     for c in comparisons:
         print(f"\n{c.title}  ({c.sources}); {c.compared} companies compared")
         for outcome, entries in c.outcomes.items():
-            if outcome == NOT_COMPARABLE:
-                print(f"  {outcome}: {len(entries)}")
-                continue
             print(f"  {outcome}: {len(entries)}")
-            for name, detail in entries:
-                print(f"      {name}: {detail}")
+            if outcome != NOT_COMPARABLE:
+                for name, detail in entries:
+                    print(f"      {name}: {detail}")
     print("\nIndustry (side by side; three classification systems)")
     for name, hubspot, wikidata, sic in industry_rows:
         print(f"  {name}: HubSpot {hubspot or '-'} | Wikidata {wikidata or '-'} | EDGAR SIC {sic or '-'}")
