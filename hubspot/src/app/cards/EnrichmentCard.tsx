@@ -68,7 +68,7 @@ const METHOD: Record<string, string> = {
   sec_name_lookup: 'SEC name lookup, corroborated by state',
 };
 
-// Same tolerances as enrichment/compare.py.
+// Mirror compare.AGREEMENT_RATIO and matching.FOUNDED_TOLERANCE_YEARS in the Python package.
 const RATIO_TOLERANCE = 1.1;
 const YEAR_TOLERANCE = 1;
 

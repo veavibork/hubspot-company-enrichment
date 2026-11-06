@@ -282,10 +282,17 @@ def print_report(plan, dry_run, errors=()):
             print(f"  {error.get('message')}")
 
 
+def positive_int(value):
+    number = int(value)
+    if number < 1:
+        raise argparse.ArgumentTypeError("must be 1 or more")
+    return number
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Enrich HubSpot companies with Wikidata and SEC EDGAR.")
     parser.add_argument("--dry-run", action="store_true", help="show changes without writing them")
-    parser.add_argument("--limit", type=int, help="only process this many companies with a domain")
+    parser.add_argument("--limit", type=positive_int, help="only process this many companies with a domain")
     args = parser.parse_args(argv)
 
     hubspot = HubSpotClient(load_hubspot_token())
@@ -301,7 +308,7 @@ def main(argv=None):
     with timed(timings, "HubSpot: read companies"):
         all_companies = list(hubspot.iter_companies(EVIDENCE_PROPERTIES + ENRICHED_PROPERTIES))
     companies = [c for c in all_companies if normalize_domain(c["properties"].get("domain"))]
-    if args.limit:
+    if args.limit is not None:
         companies = companies[: args.limit]
     print(f"Checking {len(companies)} companies against Wikidata...")
 
@@ -347,9 +354,7 @@ def run_edgar(edgar_client, wikidata, companies, results, timings):
     verified, unverified = verify_name_hits(companies, hits, records)
 
     reverse = wikidata.find_by_cik(set(verified.values()))
-    timings["Wikidata: find candidates"] = wikidata.timings["Wikidata: find candidates"]
-    timings["Wikidata: fetch details"] = wikidata.timings["Wikidata: fetch details"]
-    timings["Organization check (local)"] = wikidata.timings["Organization check (local)"]
+    timings.update(wikidata.timings)
 
     props_by_id = {c["id"]: c["properties"] for c in companies}
     for company_id, cik in verified.items():
