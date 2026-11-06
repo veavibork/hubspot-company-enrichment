@@ -14,6 +14,7 @@ import sys
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 
 from enrichment.config import load_hubspot_token
 from enrichment.domains import normalize_domain
@@ -50,18 +51,34 @@ def enriched_values(candidate):
     return {key: str(value) for key, value in values.items() if value is not None}
 
 
+def match_values(status, score, reasons, today):
+    """Match outcome properties, written for every company checked. An empty string clears a stale value."""
+    return {
+        "wikidata_match_status": status,
+        "wikidata_match_score": "" if score is None else str(score),
+        "wikidata_match_reasons": reasons,
+        "wikidata_last_checked": today,
+    }
+
+
 def same_value(current, new):
     """HubSpot returns every value as a string; compare numbers numerically ("2002" == "2002.0")."""
     if current is None or current == "":
-        return False
+        return new == ""
     try:
         return float(current) == float(new)
     except ValueError:
         return current == new
 
 
-def plan_updates(companies, candidates_by_domain):
-    """Decide what to write, without writing anything."""
+def plan_updates(companies, candidates_by_domain, today=None):
+    """Decide what to write, without writing anything.
+
+    Every company with a domain gets its match outcome recorded. Only matched
+    companies get Wikidata values; earlier values on a now-unmatched company
+    are left in place, and its status shows the current outcome.
+    """
+    today = today or datetime.now(timezone.utc).date().isoformat()
     plan = Plan()
 
     for company in companies:
@@ -74,21 +91,24 @@ def plan_updates(companies, candidates_by_domain):
             continue
 
         result = choose_candidate(candidates_by_domain.get(domain, []), props)
-        if result.status == "not_found":
-            if result.excluded:
-                plan.rejected.append((name, result))
-            else:
-                plan.no_item.append(name)
-            continue
-        if result.status == "ambiguous":
-            plan.ambiguous.append((name, result))
-            continue
 
-        plan.matches[name] = result.best
+        if result.status == "matched":
+            plan.matches[name] = result.best
+            desired = enriched_values(result.candidate)
+            desired.update(match_values("matched", result.best.score, describe(result.best), today))
+        elif result.status == "ambiguous":
+            plan.ambiguous.append((name, result))
+            reasons = "\n".join(describe(s) for s in result.scored[:3])
+            desired = match_values("ambiguous", result.best.score, reasons, today)
+        elif result.excluded:
+            plan.rejected.append((name, result))
+            desired = match_values("rejected", None, "\n".join(result.excluded), today)
+        else:
+            plan.no_item.append(name)
+            desired = match_values("no_item", None, "No Wikidata item has this website.", today)
+
         changed = {
-            key: value
-            for key, value in enriched_values(result.candidate).items()
-            if not same_value(props.get(key), value)
+            key: value for key, value in desired.items() if not same_value(props.get(key), value)
         }
         if not changed:
             plan.unchanged.append(name)
@@ -110,10 +130,12 @@ def print_report(plan, dry_run, errors=()):
     verb = "Would update" if dry_run else "Updated"
     print(f"\n{verb} {len(plan.updates)} companies:")
     for name, changes in sorted(plan.changes.items()):
-        best = plan.matches[name]
-        print(f"  {name}  [{describe(best)}]")
+        best = plan.matches.get(name)
+        print(f"  {name}  [{describe(best)}]" if best else f"  {name}")
         for key, (old, new) in changes.items():
-            print(f"      {key}: {old or '(empty)'} -> {new}")
+            if key == "wikidata_match_reasons":
+                continue  # already shown above, or in the sections below
+            print(f"      {key}: {old or '(empty)'} -> {new or '(cleared)'}")
 
     print(f"\nUnchanged: {len(plan.unchanged)}")
     if plan.unchanged:

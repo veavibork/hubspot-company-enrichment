@@ -14,11 +14,12 @@ class FakeClient:
 
 
 def test_creates_only_missing_properties():
-    client = FakeClient(existing={"name", "domain", "normalized_domain", "wikidata_id"})
+    all_names = [d["name"] for d in COMPANY_PROPERTIES]
+    client = FakeClient(existing={"name", "domain", *all_names[:2]})
 
     missing = ensure_properties(client)
 
-    assert missing == ["wikidata_industry", "wikidata_founded_year", "wikidata_employee_count"]
+    assert missing == all_names[2:]
     assert client.created == missing
 
 
