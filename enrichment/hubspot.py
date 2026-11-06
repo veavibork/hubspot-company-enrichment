@@ -72,7 +72,13 @@ class HubSpotClient:
         """Returns (results, errors). Partial failures (HTTP 207) arrive in errors, not as exceptions."""
         results, errors = [], []
         for chunk in chunked(inputs, HUBSPOT_BATCH_SIZE):
-            data = self._request("POST", path, json={"inputs": chunk})
+            try:
+                data = self._request("POST", path, json={"inputs": chunk})
+            except HubSpotError as e:
+                # Earlier chunks are already written; record this one and keep going.
+                ids = ", ".join(str(item["id"]) for item in chunk)
+                errors.append({"message": f"{e} (batch of {len(chunk)}: {ids})"})
+                continue
             results.extend(data.get("results", []))
             errors.extend(data.get("errors", []))
         return results, errors
