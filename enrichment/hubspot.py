@@ -2,17 +2,16 @@
 
 Covers only what this project needs: paging through companies, reading and
 creating company properties, and batch update/upsert. Every request goes
-through _request(), which retries on rate limits and server errors.
+through _request(), which retries on rate limits and server errors
+(see enrichment/retries.py).
 """
 
-import random
 import time
 
 import requests
 
 from enrichment.config import HUBSPOT_API_VERSION, HUBSPOT_BASE_URL, HUBSPOT_BATCH_SIZE
-
-RETRYABLE_STATUSES = {429, 500, 502, 503, 504}
+from enrichment.retries import request_with_retries
 
 
 class HubSpotError(Exception):
@@ -41,33 +40,20 @@ class HubSpotClient:
         self.sleep = sleep
 
     def _request(self, method, path, **kwargs):
-        url = f"{HUBSPOT_BASE_URL}{path}"
-
-        for attempt in range(self.max_retries + 1):
-            resp = self.session.request(method, url, timeout=30, **kwargs)
-
-            if resp.status_code not in RETRYABLE_STATUSES:
-                break
-            if attempt == self.max_retries:
-                break
-            self.sleep(self._retry_delay(resp, attempt))
-
+        resp = request_with_retries(
+            self.session,
+            method,
+            f"{HUBSPOT_BASE_URL}{path}",
+            sleep=self.sleep,
+            max_retries=self.max_retries,
+            base_delay=self.base_delay,
+            **kwargs,
+        )
         if resp.status_code >= 400:
             raise HubSpotError(resp.status_code, _error_message(resp))
         if resp.status_code == 204 or not resp.content:
             return None
         return resp.json()
-
-    def _retry_delay(self, resp, attempt):
-        """Seconds to wait before retrying: Retry-After if given, else exponential backoff."""
-        retry_after = resp.headers.get("Retry-After")
-        if retry_after:
-            try:
-                return min(float(retry_after), 60.0)
-            except ValueError:
-                pass
-        # 1s, 2s, 4s, ... plus jitter, so parallel clients don't retry in lockstep.
-        return self.base_delay * (2**attempt) + random.uniform(0, self.base_delay)
 
     # --- Companies -----------------------------------------------------------
 
