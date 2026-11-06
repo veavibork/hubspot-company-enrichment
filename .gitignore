@@ -1,0 +1,13 @@
+# Secrets
+.env
+
+# Virtual environment
+.venv/
+
+# Python bytecode and caches
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Run output
+*.log
