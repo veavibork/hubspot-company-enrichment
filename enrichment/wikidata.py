@@ -82,7 +82,9 @@ def url_variants(domain):
 
 
 def build_query(domains):
-    values = " ".join(f"<{url}>" for d in domains for url in url_variants(d))
+    # Only already-normalized hostnames may be interpolated.
+    safe = [d for d in domains if normalize_domain(d) == d]
+    values = " ".join(f"<{url}>" for d in safe for url in url_variants(d))
     return CANDIDATE_QUERY % values
 
 
