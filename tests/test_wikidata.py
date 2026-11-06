@@ -323,3 +323,26 @@ def test_search_retries_when_rate_limited():
 
     assert found == {"wayfair.com": []}
     assert waits == [5.0]
+
+
+@responses.activate
+def test_find_by_cik_reverse_lookup():
+    responses.post(
+        SPARQL_URL,
+        json={
+            "results": {
+                "bindings": [
+                    {"cik": {"value": "0001616707"}, "item": item("Q3540193"), "sitelinks": {"value": "8"}}
+                ]
+            }
+        },
+    )
+    responses.add_callback(responses.GET, API_URL, callback=entities_response)
+
+    found = WikidataClient(sleep=lambda s: None).find_by_cik({"0001616707", "0001439725"})
+
+    assert [c.qid for c in found["0001616707"]] == ["Q3540193"]
+    assert found["0001616707"][0].found_via == "SEC CIK 0001616707"
+    assert found["0001439725"] == []
+    query = parse_qs(responses.calls[0].request.body)["query"][0]
+    assert '"0001439725"' in query and '"1439725"' in query  # padded and unpadded forms
