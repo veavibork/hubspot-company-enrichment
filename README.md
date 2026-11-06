@@ -35,6 +35,14 @@ Timing (16.6s total):
   ...
 ```
 
+## On the company record
+
+A HubSpot UI extension card (React + TypeScript) shows each source's status, how the match was made, and where the sources agree:
+
+![Company Enrichment card on GitLab's record](docs/enrichment-card.png)
+
+The card only reads properties the Python run has stored, so it needs no backend or extra scopes. Founded year, employees, revenue and public/private get an agreement verdict, using the same tolerances as `enrichment.compare`; location, incorporation and industry are shown side by side. On GitLab's record, HubSpot's "Wilmington, Delaware" sits next to the SEC's "San Francisco, CA" and "DE (annual report cover page)."
+
 ## How matching works
 
 ### Wikidata, by website
@@ -116,7 +124,7 @@ Once a source has silently overwritten a field, there's nothing left to compare 
 
 ## Setup
 
-**Requirements:** Python 3.12+, the [HubSpot CLI](https://developers.hubspot.com/docs/developer-tooling/local-development/hubspot-cli/install-the-cli), and a HubSpot account. A free [developer test account](https://developers.hubspot.com/docs/getting-started/account-types) works.
+**Requirements:** Python 3.12+, Node.js (for the card), the [HubSpot CLI](https://developers.hubspot.com/docs/developer-tooling/local-development/hubspot-cli/install-the-cli), and a HubSpot account. A free [developer test account](https://developers.hubspot.com/docs/getting-started/account-types) works.
 
 1. **Install:**
 
@@ -142,6 +150,15 @@ Once a source has silently overwritten a field, there's nothing left to compare 
    ```bash
    python -m enrichment.seed
    ```
+
+5. **Add the card** (optional). Install its dependencies, upload, then add it to the company record view (**Customize** → a tab → **+** → **Card library**, filter **App** → **Company Enrichment**):
+
+   ```bash
+   cd hubspot/src/app/cards && npm install && cd ../../..
+   hs project upload
+   ```
+
+   `hs project dev` serves the card locally for faster iteration.
 
 ## Usage
 
@@ -175,7 +192,8 @@ enrichment/
   properties.py       custom property definitions
   domains.py, countries.py, seed.py, build_countries.py, check_suffixes.py
 data/                 sample companies, generated country table
-hubspot/              HubSpot app configuration (scopes)
+hubspot/              HubSpot app: configuration (scopes) and the UI card (src/app/cards/)
+docs/                 screenshots
 tests/
 ```
 
