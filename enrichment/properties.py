@@ -35,6 +35,8 @@ COMPANY_PROPERTIES = [
         "type": "number",
         "fieldType": "number",
         "groupName": GROUP,
+        # Without this, HubSpot shows thousands separators: "2,011".
+        "numberDisplayHint": "unformatted",
     },
     {
         "name": "wikidata_employee_count",

@@ -38,6 +38,11 @@ def test_dry_run_reports_missing_without_creating():
     assert client.created == []
 
 
+def test_founded_year_displays_without_thousands_separator():
+    founded = next(d for d in COMPANY_PROPERTIES if d["name"] == "wikidata_founded_year")
+    assert founded["numberDisplayHint"] == "unformatted"
+
+
 def test_normalized_domain_is_unique():
     normalized = next(d for d in COMPANY_PROPERTIES if d["name"] == "normalized_domain")
     assert normalized["hasUniqueValue"] is True
